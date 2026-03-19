@@ -71,40 +71,52 @@ onAuthStateChanged(auth, async user => {
     showScreen('landing-screen');
     return;
   }
+  // Se já temos currentUser definido (ex: após criarGuarda), não refaz o processo
+  if(currentUser && currentUser.uid === user.uid) return;
+
   showLoading('Entrando...');
   try {
     const snap = await getDoc(doc(db,'users', user.uid));
-    if(!snap.exists()){ await signOut(auth); return; }
-    const uData = snap.data();
-    currentUser = { uid: user.uid, email: user.email, ...uData };
-
-    const orgSnap = await getDoc(doc(db,'orgs', uData.orgId));
-    if(!orgSnap.exists()){ await signOut(auth); return; }
-    currentOrg = { id: uData.orgId, ...orgSnap.data() };
-
-    // Atualiza título
-    document.getElementById('topbar-city-admin').textContent = `🛡️ ${currentOrg.cidade} — Admin`;
-    document.getElementById('topbar-city-user').textContent  = `🛡️ ${currentOrg.cidade}`;
-    document.getElementById('admin-greeting').textContent    = currentUser.nome;
-    document.getElementById('user-greeting').textContent     = currentUser.nome;
-
-    if(currentUser.role==='admin'){
-      initAdmin();
-      showScreen('admin-screen');
-    } else {
-      if(currentUser.tempPass){
-        showScreen('troca-senha-screen');
-        document.getElementById('troca-nome').textContent = currentUser.nome;
-      } else {
-        initUser();
-        showScreen('user-screen');
-      }
+    // Se o documento ainda não existe (sendo criado), aguarda
+    if(!snap.exists()){
+      setTimeout(async () => {
+        const snap2 = await getDoc(doc(db,'users', user.uid));
+        if(!snap2.exists()){ await signOut(auth); return; }
+        const uData = snap2.data();
+        await carregarUsuario(user, uData);
+      }, 2000);
+      return;
     }
+    const uData = snap.data();
+    await carregarUsuario(user, uData);
   } catch(e){
     console.error(e);
     showScreen('login-screen');
   }
 });
+
+async function carregarUsuario(user, uData) {
+  currentUser = { uid: user.uid, email: user.email, ...uData };
+  const orgSnap = await getDoc(doc(db,'orgs', uData.orgId));
+  if(!orgSnap.exists()){ await signOut(auth); return; }
+  currentOrg = { id: uData.orgId, ...orgSnap.data() };
+  document.getElementById('topbar-city-admin').textContent = `🛡️ ${currentOrg.cidade} — Admin`;
+  document.getElementById('topbar-city-user').textContent  = `🛡️ ${currentOrg.cidade}`;
+  document.getElementById('admin-greeting').textContent    = currentUser.nome;
+  document.getElementById('user-greeting').textContent     = currentUser.nome;
+  if(currentUser.role==='admin'){
+    initAdmin();
+    showScreen('admin-screen');
+  } else {
+    if(currentUser.tempPass){
+      showScreen('troca-senha-screen');
+      document.getElementById('troca-nome').textContent = currentUser.nome;
+    } else {
+      initUser();
+      showScreen('user-screen');
+    }
+  }
+}
 
 // ════════════════════════════════════════════════
 // LANDING — Criar Guarda ou Entrar
@@ -126,21 +138,41 @@ window.criarGuarda = async () => {
   if(pass.length<6){ err('cg-error','Senha mínimo 6 caracteres.'); return; }
   if(pass!==conf){ err('cg-error','Senhas não coincidem.'); return; }
   document.getElementById('cg-btn').disabled=true;
+  showLoading('Criando sua Guarda...');
   try {
-    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const uid  = cred.user.uid;
-    const orgId = uid; // orgId = uid do admin criador
+    const cred  = await createUserWithEmailAndPassword(auth, email, pass);
+    const uid   = cred.user.uid;
+    const orgId = uid;
+
+    // Salva org e usuário no Firestore
     await setDoc(doc(db,'orgs', orgId),{
       cidade, criadoEm: serverTimestamp(), adminUid: uid
     });
     await setDoc(doc(db,'users', uid),{
       nome, email, role:'admin', orgId, criadoEm: serverTimestamp()
     });
-    // Auth state listener vai redirecionar automaticamente
+
+    // Define estado global diretamente sem esperar onAuthStateChanged
+    currentUser = { uid, email, nome, role:'admin', orgId };
+    currentOrg  = { id: orgId, cidade, adminUid: uid };
+
+    // Atualiza UI
+    document.getElementById('topbar-city-admin').textContent = `🛡️ ${cidade} — Admin`;
+    document.getElementById('topbar-city-user').textContent  = `🛡️ ${cidade}`;
+    document.getElementById('admin-greeting').textContent    = nome;
+    document.getElementById('user-greeting').textContent     = nome;
+    document.getElementById('admin-email-show').textContent  = email;
+
+    // Vai direto para o painel admin
+    initAdmin();
+    showScreen('admin-screen');
+
   } catch(e){
     document.getElementById('cg-btn').disabled=false;
+    showScreen('criar-guarda-screen');
     err('cg-error', e.code==='auth/email-already-in-use'
-      ? 'E-mail já cadastrado.' : 'Erro ao criar: '+e.message);
+      ? 'E-mail já cadastrado. Use outro ou clique em Entrar.'
+      : 'Erro ao criar: '+e.message);
   }
 };
 
